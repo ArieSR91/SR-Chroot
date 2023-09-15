@@ -1,0 +1,336 @@
+#!/data/data/com.termux/files/usr/bin/bash
+if [ "$(id -un)" != "root" ]; then
+    echo "Run as root"
+    exit
+fi
+COMPONENT_DIR="$HOME/SR-Chroot"
+function kali_chroot() {
+    LINUXPATH="/data/local/linux/kali"
+    mount_chroot
+    umount_chroot
+    return 0
+}
+
+function ubuntu_chroot() {
+    LINUXPATH="/data/local/linux/ubuntu"
+    mount_chroot
+    umount_chroot
+    return 0
+}
+
+function debian_chroot() {
+    LINUXPATH="/data/local/linux/debian"
+    mount_chroot
+    umount_chroot
+    return 0
+}
+
+function get_arch() {
+    printf "${blue}[*] Checking device architecture ...\n"
+    case $(getprop ro.product.cpu.abi) in
+        arm64-v8a)
+            arch=arm64
+            ;;
+        armeabi|armeabi-v7a)
+            arch=armhf
+            ;;
+        *)
+            unsupported_arch
+            ;;
+    esac
+    return 0
+}
+
+function install_chroot() {
+    items=(1 "Debian"
+           2 "Ubuntu"
+           3 "Kali")
+
+    while choice=$(dialog --title "SR-chroot" --menu "Select debian based distro" 10 40 3 "${items[@]}" 2>&1 >/dev/tty)
+        do
+        case $choice in
+            1)
+                if [ "$codename" == "" ]; then
+                    break
+                else
+                    distro=debian
+                    debian_codename
+                    clear
+                    get_arch
+                    sleep 3
+                fi
+                ;;
+            2)
+                if [ "$codename" == "" ]; then
+                    break
+                else
+                    distro=ubuntu
+                    ubuntu_codename
+                    clear
+                    get_arch
+                    sleep 3
+                fi
+                ;;
+            3)
+                distro=kali
+                codename=current
+                clear
+                get_arch
+                sleep 3
+                ;;
+        esac
+    done
+    clear
+    if [ -d /data/local/linux/$distro ]; then
+        read -p "Download rootfs? [Y/n] " download;
+        if [ "$download" == "Y" ] || [ "$download" == "y" ]; then
+            am start --user 0 -a android.intent.action.VIEW -d https://sgp1lxdmirror01.do.letsbuildthe.cloud/images/${distro}/${codename}/${arch}/default
+            sleep 3
+            echo -e "\nWait until the download is complete and extract it.\n"
+            read -p "Do you want to extract? [Y/n] " extract;
+            if [ "$extract" == "Y" ] || [ "$extract" == "y" ]; then
+                tar -xJvf /sdcard/Download/rootfs.tar.xz -C /data/local/linux/${distro}/
+                do_configure
+            fi
+        else
+            exit
+        fi
+    else
+        mkdir /data/local/linux/$distro
+    fi
+    return 0
+}
+
+function debian_codename() {
+    items=(1 "Buster"
+           2 "Bullseye"
+           3 "Bookworm")
+
+    while choice=$(dialog --title "Debian" --menu "Select codename" 10 40 3 "${items[@]}" 2>&1 >/dev/tty)
+        do
+        case $choice in
+            1)
+                codename=buster
+                break
+                ;;
+            2)
+                codename=bullseye
+                break
+                ;;
+            3)
+                codename=bookworm
+                break
+                ;;
+            *)
+                echo "Wrong options"
+                exit
+        esac
+    done
+    clear
+    return 0
+}
+
+function ubuntu_codename() {
+    items=(1 "Xenial"
+           2 "Bionic"
+           3 "Focal"
+           4 "Jammy"
+           5 "Lunar"
+           6 "Mantic")
+
+    while choice=$(dialog --title "Ubuntu" --menu "Select codename" 10 40 3 "${items[@]}" 2>&1 >/dev/tty)
+        do
+        case $choice in
+            1)
+                codename=xenial
+                break
+                ;;
+            2)
+                codename=bionic
+                break
+                ;;
+            3)
+                codename=focal
+                break
+                ;;
+            4)
+                codename=jammy
+                break
+                ;;
+            5)
+                codename=lunar
+                break
+                ;;
+            6)
+                codename=mantic
+                break
+                ;;
+            *)
+                echo "Wrong options"
+                exit
+        esac
+    done
+    clear
+    return 0
+}
+
+function do_configure() {
+    LINUXPATH=/data/local/linux/$distro
+    local login_defs
+    login_defs="${LINUXPATH}/etc/login.defs"
+    if [ ! -e "${login_defs}" ]; then
+        touch "${login_defs}"
+    fi
+    if ! $(grep -q '^ *UID_MIN' "${login_defs}"); then
+        echo "UID_MIN 5000" >>"${login_defs}"
+        sed -i 's|^[#]\?UID_MIN.*|UID_MIN 5000|' "${login_defs}"
+    fi
+    if ! $(grep -q '^ *GID_MIN' "${login_defs}"); then
+        echo "GID_MIN 5000" >>"${login_defs}"
+        sed -i 's|^[#]\?GID_MIN.*|GID_MIN 5000|' "${login_defs}"
+    fi
+#    if [ -n "${PRIVILEGED_USERS}" ]; then
+        local aid
+        for aid in $(cat "${COMPONENT_DIR}/android_groups")
+        do
+            local xname=$(echo ${aid} | awk -F: '{print $1}')
+            local xid=$(echo ${aid} | awk -F: '{print $2}')
+            sed -i "s|^${xname}:.*|${xname}:x:${xid}:|" "${LINUXPATH}/etc/group"
+            if ! $(grep -q "^${xname}:" "${LINUXPATH}/etc/group"); then
+                echo "${xname}:x:${xid}:" >> "${LINUXPATH}/etc/group"
+            fi
+            if ! $(grep -q "^${xname}:" "${LINUXPATH}/etc/passwd"); then
+                echo "${xname}:x:${xid}:${xid}::/:/bin/false" >> "${LINUXPATH}/etc/passwd"
+            fi
+        done
+        local usr
+        for usr in ${PRIVILEGED_USERS}
+        do
+            local uid=${usr%%:*}
+            local gid=${usr##*:}
+            sed -i "s|^\(${gid}:.*:[^:]+\)$|\1,${uid}|" "${LINUXPATH}/etc/group"
+            sed -i "s|^\(${gid}:.*:\)$|\1${uid}|" "${LINUXPATH}/etc/group"
+        done
+#    fi
+    return 0
+}
+
+function mount_chroot() {
+    if [ ! -d $LINUXPATH/data ]; then
+        mkdir $LINUXPATH/data
+    fi
+    if [ ! -d $LINUXPATH/system ]; then
+        mkdir $LINUXPATH/system
+    fi
+    if [ ! -d $LINUXPATH/sdcard ]; then
+        mkdir $LINUXPATH/sdcard
+    fi
+    if [ ! -d $LINUXPATH/ext_sdcard ]; then
+        mkdir $LINUXPATH/ext_sdcard
+    fi
+    if [ ! -f $LINUXPATH/root/setup.sh ]; then
+        cp ${COMPONENT_DIR}/setup.sh $LINUXPATH/root/
+    fi
+    if [ ! -f $LINUXPATH/usr/local/bin/vnc ]; then
+        echo "#!/bin/bash
+function start_vnc() {
+    vncserver :0 -geometry 1280x720
+}
+
+function stop_vnc() {
+    vncserver -kill :0
+}
+
+case \$1 in
+    start)
+        start_vnc
+        ;;
+    stop)
+        stop_vnc
+        ;;
+esac
+" >> $LINUXPATH/usr/local/bin/vnc
+    chmod 775 $LINUXPATH/usr/local/bin/vnc
+    fi
+    busybox mount -o remount,dev,suid /data
+    busybox mount --bind /dev $LINUXPATH/dev
+    busybox mount --bind /dev/pts $LINUXPATH/dev/pts
+    busybox mount --bind /dev/shm $LINUXPATH/dev/shm
+    busybox mount --bind /sys $LINUXPATH/sys
+    busybox mount --bind /proc $LINUXPATH/proc
+    busybox mount --bind /data $LINUXPATH/data
+    busybox mount --bind /system $LINUXPATH/system
+    busybox mount --bind /sdcard $LINUXPATH/sdcard
+    if [ -b /dev/block/sda1 ]; then
+        busybox mount -o defaults /dev/block/sda1 $LINUXPATH/mnt/usb
+        usbsd=1
+    else
+        usbsd=0
+    fi
+    if [ -b /dev/block/mmcblk1p1 ]; then
+        busybox mount -o defaults /dev/block/mmcblk1p1 $LINUXPATH/ext_sdcard
+        extsd=1
+    else
+        extsd=0
+    fi
+    busybox mount -t devpts devpts $LINUXPATH/dev/pts
+    busybox chroot $LINUXPATH /bin/su - root
+    return 0
+}
+function umount_chroot() {
+    busybox umount $LINUXPATH/dev/pts
+    busybox umount $LINUXPATH/dev/shm
+    busybox umount -l $LINUXPATH/dev
+    busybox umount $LINUXPATH/sys
+    busybox umount $LINUXPATH/proc
+    busybox umount $LINUXPATH/data
+    busybox umount $LINUXPATH/system
+    busybox umount $LINUXPATH/sdcard
+    if [ "$extsd" == "1" ]; then
+        busybox umount $LINUXPATH/ext_sdcard
+    fi
+    if [ "$usbsd" == "1" ]; then
+        busybox umount $LINUXPATH/mnt/usb
+    fi
+    return 0
+}
+
+function show_help() {
+    echo "
+Usage: srchroot [command] [options]
+
+Command :
+          install          : Install linux chroot
+          debian           : Login to debian
+          ubuntu           : Login to Ubuntu
+          kali             : Login to kali
+
+Options:
+         -h, --help        : Show this help screen
+         -v, --version     : Show version
+"
+}
+
+function show_version() {
+    echo "1.0.0-SR"
+}
+case $1 in
+    install)
+        install_chroot
+        ;;
+    kali)
+        kali_chroot
+        ;;
+    ubuntu)
+        ubuntu_chroot
+        ;;
+    debian)
+        debian_chroot
+        ;;
+    -v | --version)
+        show_version
+        ;;
+    -h | --help | *)
+        show_help
+        ;;
+esac
